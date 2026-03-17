@@ -1,0 +1,118 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: userId (Firebase Auth UID)
+    // Fields:
+    //   - uid: string (required) - The unique Firebase Auth ID.
+    //   - email: string (required, format: email) - User's email address.
+    //   - displayName: string (optional) - User's display name.
+    //   - photoURL: string (optional) - User's profile picture URL.
+    //   - role: string (required, enum: ["user", "admin"]) - User's role.
+    //   - createdAt: string (optional, format: date-time) - Account creation timestamp.
+    //
+    // Collection: orders
+    // Document ID: orderId (Auto-generated)
+    // Fields:
+    //   - userId: string (required) - The ID of the user who placed the order.
+    //   - items: list (required) - List of items purchased.
+    //   - total: number (required, positive) - Total order amount.
+    //   - status: string (required, enum: ["pending", "shipped", "delivered"]) - Current status.
+    //   - createdAt: timestamp (required) - Order placement timestamp.
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "jansenalmodiel122@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidUser(data, isSelf) {
+      let allowedFields = ['uid', 'email', 'displayName', 'photoURL', 'role', 'createdAt', 'updatedAt'];
+      return hasOnlyAllowedFields(allowedFields) &&
+             (isSelf ? data.uid == request.auth.uid : true) &&
+             isValidEmail(data.email) &&
+             data.role in ['user', 'admin'];
+    }
+
+    function isValidOrder(data) {
+      return hasOnlyAllowedFields(['userId', 'items', 'total', 'status', 'createdAt']) &&
+             data.userId == request.auth.uid &&
+             data.items is list &&
+             data.total is number && data.total > 0 &&
+             data.status in ['pending', 'shipped', 'delivered'] &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidReview(data) {
+      return hasOnlyAllowedFields(['productId', 'userId', 'userName', 'rating', 'comment', 'createdAt']) &&
+             data.productId is string &&
+             data.userId == request.auth.uid &&
+             data.userName is string &&
+             data.rating is number && data.rating >= 1 && data.rating <= 5 &&
+             data.comment is string && data.comment.size() <= 1000 &&
+             data.createdAt is timestamp;
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data, true) && (request.resource.data.role == 'user' || isAdmin());
+      allow update: if (isOwner(userId) && isValidUser(request.resource.data, true) && (request.resource.data.role == resource.data.role || isAdmin())) || 
+                    (isAdmin() && isValidUser(request.resource.data, false));
+    }
+
+    match /orders/{orderId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidOrder(request.resource.data);
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow create: if isAuthenticated() && isValidReview(request.resource.data);
+      allow update: if isAuthenticated() && isOwner(resource.data.userId) && isValidReview(request.resource.data);
+      allow delete: if isAuthenticated() && (isOwner(resource.data.userId) || isAdmin());
+    }
+
+    match /products/{productId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
